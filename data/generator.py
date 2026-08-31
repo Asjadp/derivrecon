@@ -4,8 +4,14 @@ Generates realistic internal OMS trade feeds vs counterparty clearing feeds.
 """
 import random
 import json
+import sys
+import os
 from datetime import date, timedelta
 from typing import List, Tuple, Dict, Any
+
+# Ensure project root is in python path for Linux / Streamlit Cloud deployment
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from src.models import AssetClass, TradeRecord
 
 COUNTERPARTIES = [

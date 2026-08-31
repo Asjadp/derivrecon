@@ -2,12 +2,17 @@
 DerivRecon - Automated Multi-Asset Derivative Trade Reconciliation & Exception Management Dashboard
 Built with Streamlit, Pandas, Plotly, and OpenPyXL.
 """
+import sys
+import os
+import json
+from io import BytesIO
+
+# Ensure project root is in python path for Linux / Streamlit Cloud deployment
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import json
-import os
-from io import BytesIO
 from openpyxl import Workbook
 
 from src.models import BreakType, BreakSeverity, BreakStatus, AssetClass
