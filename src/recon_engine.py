@@ -2,14 +2,15 @@
 Reconciliation & Matching Engine for DerivRecon
 Handles exact matching, tolerance matching, break classification, and severity scoring.
 """
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from src.models import (
     ReconResult, BreakType, BreakSeverity, BreakStatus, FieldDiff, AssetClass
 )
 
 ECONOMIC_FIELDS = {
-    "notional", "fixed_rate", "strike_price", "forward_rate", 
-    "option_type", "direction", "underlying", "currency"
+    "notional", "fixed_rate", "strike_price", "forward_rate", "spot_rate",
+    "option_type", "option_style", "direction", "underlying", "currency",
+    "payment_frequency", "day_count_convention", "floating_index", "premium_amount"
 }
 
 NON_ECONOMIC_FIELDS = {
@@ -20,17 +21,20 @@ TIMING_FIELDS = {
     "settlement_date", "trade_date", "expiration_date"
 }
 
-TOLERANCE_RULES = {
+DEFAULT_TOLERANCE_RULES = {
     "notional": 5.0,            # $5 rounding threshold
     "fixed_rate": 0.00005,      # 0.005 bps threshold
     "forward_rate": 0.0001,     # 1 pip threshold
     "spot_rate": 0.0001,
+    "strike_price": 0.01,       # 1 cent threshold
+    "premium_amount": 1.0,      # $1 premium rounding
 }
 
 class ReconciliationEngine:
-    def __init__(self, notional_tolerance: float = 5.0, rate_tolerance: float = 0.0001):
-        self.notional_tolerance = notional_tolerance
-        self.rate_tolerance = rate_tolerance
+    def __init__(self, tolerance_rules: Optional[Dict[str, float]] = None):
+        self.tolerance_rules = dict(DEFAULT_TOLERANCE_RULES)
+        if tolerance_rules:
+            self.tolerance_rules.update(tolerance_rules)
 
     def reconcile_batches(
         self, internal_trades: List[Dict[str, Any]], counterparty_trades: List[Dict[str, Any]]
@@ -52,7 +56,7 @@ class ReconciliationEngine:
                 result = self._compare_single_pair(int_trade, cp_trade)
                 results.append(result)
             else:
-                # Unmatched Internal Trade (Orphan)
+                # Unmatched Internal Trade (Orphan in Internal OMS)
                 result = ReconResult(
                     uti=uti,
                     asset_class=int_trade.get("asset_class", "UNKNOWN"),
@@ -60,9 +64,9 @@ class ReconciliationEngine:
                     break_type=BreakType.UNMATCHED_INTERNAL,
                     severity=BreakSeverity.HIGH,
                     status=BreakStatus.UNASSIGNED,
-                    notional_internal=int_trade.get("notional", 0.0),
+                    notional_internal=float(int_trade.get("notional", 0.0)),
                     notional_counterparty=0.0,
-                    exposure_at_risk=int_trade.get("notional", 0.0),
+                    exposure_at_risk=float(int_trade.get("notional", 0.0)),
                     internal_trade=int_trade,
                     counterparty_trade=None,
                     field_diffs=[
@@ -88,8 +92,8 @@ class ReconciliationEngine:
                     severity=BreakSeverity.HIGH,
                     status=BreakStatus.UNASSIGNED,
                     notional_internal=0.0,
-                    notional_counterparty=cp_trade.get("notional", 0.0),
-                    exposure_at_risk=cp_trade.get("notional", 0.0),
+                    notional_counterparty=float(cp_trade.get("notional", 0.0)),
+                    exposure_at_risk=float(cp_trade.get("notional", 0.0)),
                     internal_trade=None,
                     counterparty_trade=cp_trade,
                     field_diffs=[
@@ -110,7 +114,7 @@ class ReconciliationEngine:
         self, int_trade: Dict[str, Any], cp_trade: Dict[str, Any]
     ) -> ReconResult:
         uti = int_trade["uti"]
-        asset_class = int_trade.get("asset_class", "UNKNOWN")
+        asset_class = int_trade.get("asset_class", cp_trade.get("asset_class", "UNKNOWN"))
         cp_name = int_trade.get("counterparty_name", cp_trade.get("counterparty_name", "UNKNOWN"))
         notional_int = float(int_trade.get("notional", 0.0))
         notional_cp = float(cp_trade.get("notional", 0.0))
@@ -126,11 +130,16 @@ class ReconciliationEngine:
             if int_val == cp_val:
                 continue
 
-            # Apply tolerance rules for numeric float values
-            if isinstance(int_val, (int, float)) and isinstance(cp_val, (int, float)):
-                tol = TOLERANCE_RULES.get(key, 1e-6)
-                if abs(float(int_val) - float(cp_val)) <= tol:
-                    continue
+            # Apply tolerance rules for numeric float/int values
+            if (isinstance(int_val, (int, float)) or isinstance(cp_val, (int, float))) and int_val is not None and cp_val is not None:
+                try:
+                    f_int = float(int_val)
+                    f_cp = float(cp_val)
+                    tol = self.tolerance_rules.get(key, 1e-6)
+                    if abs(f_int - f_cp) <= tol:
+                        continue
+                except (ValueError, TypeError):
+                    pass
 
             # Field mismatch detected
             is_econ = key in ECONOMIC_FIELDS
@@ -206,12 +215,23 @@ class ReconciliationEngine:
         
         # Check rate or strike discrepancies
         for d in diffs:
-            if d.field_name in ["fixed_rate", "forward_rate", "strike_price"]:
+            if d.field_name in ["fixed_rate", "forward_rate"]:
                 try:
                     delta = abs(float(d.internal_val) - float(d.counterparty_val))
-                    if delta >= 0.0020:  # >= 20 bps or $20 strike
+                    if delta >= 0.0020:  # >= 20 bps or 20 pips
                         return BreakSeverity.CRITICAL
-                    elif delta >= 0.0005: # >= 5 bps
+                    elif delta >= 0.0005: # >= 5 bps or 5 pips
+                        return BreakSeverity.HIGH
+                except (ValueError, TypeError):
+                    return BreakSeverity.HIGH
+            elif d.field_name == "strike_price":
+                try:
+                    delta = abs(float(d.internal_val) - float(d.counterparty_val))
+                    base_strike = max(float(d.internal_val), 1.0)
+                    rel_delta = delta / base_strike
+                    if rel_delta >= 0.02 or delta >= 10.0:
+                        return BreakSeverity.CRITICAL
+                    elif rel_delta >= 0.005 or delta >= 2.0:
                         return BreakSeverity.HIGH
                 except (ValueError, TypeError):
                     return BreakSeverity.HIGH
@@ -225,20 +245,30 @@ class ReconciliationEngine:
         notional_cp = float(cp_trade.get("notional", 0.0))
         exposure = abs(notional_int - notional_cp)
 
-        # If notional matches, check exposure from rate/strike delta over lifetime/annual cashflow
+        # If notional matches, check exposure from rate/strike delta over annual cashflow or option value
         if exposure < 1.0:
             for d in diffs:
                 if d.field_name == "fixed_rate":
-                    rate_delta = abs(float(d.internal_val) - float(d.counterparty_val))
-                    exposure = rate_delta * notional_int  # Annual cashflow delta
-                elif d.field_name == "strike_price" and "strike_price" in int_trade:
-                    strike_int = float(int_trade["strike_price"])
-                    strike_cp = float(cp_trade["strike_price"])
-                    if strike_int > 0:
-                        exposure = (abs(strike_int - strike_cp) / strike_int) * notional_int
+                    try:
+                        rate_delta = abs(float(d.internal_val) - float(d.counterparty_val))
+                        exposure = max(exposure, rate_delta * notional_int)
+                    except (ValueError, TypeError):
+                        pass
+                elif d.field_name == "strike_price":
+                    try:
+                        strike_int = float(d.internal_val)
+                        strike_cp = float(d.counterparty_val)
+                        if strike_int > 0:
+                            exposure = max(exposure, (abs(strike_int - strike_cp) / strike_int) * notional_int)
+                    except (ValueError, TypeError):
+                        pass
                 elif d.field_name == "forward_rate":
-                    fwd_int = float(int_trade.get("forward_rate", 1.0))
-                    fwd_cp = float(cp_trade.get("forward_rate", 1.0))
-                    exposure = (abs(fwd_int - fwd_cp) / max(fwd_int, 0.0001)) * notional_int
+                    try:
+                        fwd_int = float(d.internal_val)
+                        fwd_cp = float(d.counterparty_val)
+                        if fwd_int > 0:
+                            exposure = max(exposure, (abs(fwd_int - fwd_cp) / fwd_int) * notional_int)
+                    except (ValueError, TypeError):
+                        pass
 
         return round(exposure, 2)
