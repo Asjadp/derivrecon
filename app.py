@@ -47,18 +47,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Data Loading & Session State Initialization
-DATA_DIR = "data"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
 INT_FILE = os.path.join(DATA_DIR, "internal_trades.json")
 CP_FILE = os.path.join(DATA_DIR, "counterparty_trades.json")
 
 def load_data():
-    if not os.path.exists(INT_FILE) or not os.path.exists(CP_FILE):
-        save_feeds_to_file(INT_FILE, CP_FILE, count=50)
-    with open(INT_FILE, "r") as f:
-        internal_trades = json.load(f)
-    with open(CP_FILE, "r") as f:
-        cp_trades = json.load(f)
-    return internal_trades, cp_trades
+    if os.path.exists(INT_FILE) and os.path.exists(CP_FILE):
+        try:
+            with open(INT_FILE, "r") as f:
+                internal_trades = json.load(f)
+            with open(CP_FILE, "r") as f:
+                cp_trades = json.load(f)
+            if internal_trades and cp_trades:
+                return internal_trades, cp_trades
+        except Exception:
+            pass
+    return save_feeds_to_file(INT_FILE, CP_FILE, count=50)
 
 if "internal_trades" not in st.session_state or "cp_trades" not in st.session_state:
     st.session_state.internal_trades, st.session_state.cp_trades = load_data()

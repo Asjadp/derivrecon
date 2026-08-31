@@ -10,9 +10,14 @@ from datetime import date, timedelta
 from typing import List, Tuple, Dict, Any
 
 # Ensure project root is in python path for Linux / Streamlit Cloud deployment
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if base_dir not in sys.path:
+    sys.path.insert(0, base_dir)
 
-from src.models import AssetClass, TradeRecord
+try:
+    from src.models import AssetClass, TradeRecord
+except ImportError:
+    from models import AssetClass, TradeRecord
 
 COUNTERPARTIES = [
     ("LEI-JPM-001", "JPMorgan Chase Bank NA"),
@@ -170,13 +175,23 @@ def generate_trade_batch(count: int = 50, break_ratio: float = 0.30) -> Tuple[Li
 
     return internal_trades, counterparty_trades
 
-def save_feeds_to_file(internal_path: str = "data/internal_trades.json", cp_path: str = "data/counterparty_trades.json", count: int = 50):
+def save_feeds_to_file(internal_path: str = None, cp_path: str = None, count: int = 50):
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if internal_path is None:
+        internal_path = os.path.join(root_dir, "data", "internal_trades.json")
+    if cp_path is None:
+        cp_path = os.path.join(root_dir, "data", "counterparty_trades.json")
+    
     internal, cp = generate_trade_batch(count=count)
-    with open(internal_path, "w") as f:
-        json.dump(internal, f, indent=2)
-    with open(cp_path, "w") as f:
-        json.dump(cp, f, indent=2)
-    print(f"Generated {len(internal)} internal trades and {len(cp)} counterparty trades.")
+    try:
+        os.makedirs(os.path.dirname(internal_path), exist_ok=True)
+        with open(internal_path, "w") as f:
+            json.dump(internal, f, indent=2)
+        with open(cp_path, "w") as f:
+            json.dump(cp, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Write error ({e}), returning trades in memory.")
+    return internal, cp
 
 if __name__ == "__main__":
     save_feeds_to_file()
