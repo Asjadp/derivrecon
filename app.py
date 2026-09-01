@@ -153,9 +153,9 @@ elif data_source == "📤 Upload Custom Feeds":
 
 # Matching Tolerances
 with st.sidebar.expander("🎯 Matching Tolerances", expanded=False):
-    notional_tol = st.number_input("Notional Rounding ($)", value=st.session_state.tolerance_rules.get("notional", 5.0), step=1.0)
-    rate_tol_bps = st.number_input("Fixed Rate Tol (bps)", value=round(st.session_state.tolerance_rules.get("fixed_rate", 0.00005) * 10000, 3), step=0.1)
-    fwd_tol_pips = st.number_input("Forward Rate Tol (pips)", value=round(st.session_state.tolerance_rules.get("forward_rate", 0.0001) * 10000, 1), step=0.5)
+    notional_tol = st.number_input("Notional Rounding ($)", min_value=0.0, value=float(st.session_state.tolerance_rules.get("notional", 5.0)), step=1.0)
+    rate_tol_bps = st.number_input("Fixed Rate Tol (bps)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("fixed_rate", 0.00005) * 10000, 3)), step=0.1)
+    fwd_tol_pips = st.number_input("Forward Rate Tol (pips)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("forward_rate", 0.0001) * 10000, 1)), step=0.5)
     
     if st.button("Apply Tolerances", key="apply_tol"):
         st.session_state.tolerance_rules["notional"] = float(notional_tol)
