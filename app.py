@@ -153,16 +153,29 @@ elif data_source == "📤 Upload Custom Feeds":
 
 # Matching Tolerances
 with st.sidebar.expander("🎯 Matching Tolerances", expanded=False):
-    notional_tol = st.number_input("Notional Rounding ($)", min_value=0.0, value=float(st.session_state.tolerance_rules.get("notional", 5.0)), step=1.0)
-    rate_tol_bps = st.number_input("Fixed Rate Tol (bps)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("fixed_rate", 0.00005) * 10000, 3)), step=0.1)
-    fwd_tol_pips = st.number_input("Forward Rate Tol (pips)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("forward_rate", 0.0001) * 10000, 1)), step=0.5)
+    st.caption("Define acceptable variance thresholds to absorb minor rounding differences:")
+    notional_tol = st.number_input("Notional Rounding ($)", min_value=0.0, value=float(st.session_state.tolerance_rules.get("notional", 5.0)), step=5.0)
+    rate_tol_bps = st.number_input("Fixed Rate Tol (bps)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("fixed_rate", 0.00005) * 10000, 3)), step=0.5)
+    fwd_tol_pips = st.number_input("Forward Rate Tol (pips)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("forward_rate", 0.0001) * 10000, 1)), step=1.0)
+    strike_tol = st.number_input("Option Strike Tol ($)", min_value=0.0, value=float(st.session_state.tolerance_rules.get("strike_price", 0.01)), step=1.0)
+    
+    st.caption("💡 *Typical values: Micro variances are 1–3 bps or 2–5 pips. Macro breaks are 15+ bps or $250k+.*")
     
     if st.button("Apply Tolerances", key="apply_tol"):
+        prev_breaks = sum(1 for r in st.session_state.recon_results if r.break_type != BreakType.MATCHED)
         st.session_state.tolerance_rules["notional"] = float(notional_tol)
         st.session_state.tolerance_rules["fixed_rate"] = float(rate_tol_bps / 10000)
         st.session_state.tolerance_rules["forward_rate"] = float(fwd_tol_pips / 10000)
+        st.session_state.tolerance_rules["strike_price"] = float(strike_tol)
         execute_reconciliation()
-        st.success("Tolerances updated & reconciliation re-run!")
+        new_breaks = sum(1 for r in st.session_state.recon_results if r.break_type != BreakType.MATCHED)
+        diff = prev_breaks - new_breaks
+        if diff > 0:
+            st.success(f"Absorbed {diff} micro-breaks! Total breaks reduced from {prev_breaks} to {new_breaks}.")
+        elif diff < 0:
+            st.warning(f"Tighter tolerances flagged {-diff} additional breaks (from {prev_breaks} to {new_breaks}).")
+        else:
+            st.info(f"Reconciliation re-run: Active breaks remain at {new_breaks}.")
         st.rerun()
 
 st.sidebar.markdown("---")

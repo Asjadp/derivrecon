@@ -105,7 +105,7 @@ def generate_trade_batch(count: int = 50, break_ratio: float = 0.30) -> Tuple[Li
 
         # Inject breaks based on break_ratio
         if random.random() < break_ratio:
-            break_scenario = random.choice(["ECONOMIC", "NON_ECONOMIC", "TIMING"])
+            break_scenario = random.choice(["ECONOMIC", "NON_ECONOMIC", "TIMING", "MICRO_ROUNDING"])
             
             if break_scenario == "ECONOMIC":
                 choice = random.choice(["notional", "rate_or_strike"])
@@ -113,11 +113,23 @@ def generate_trade_batch(count: int = 50, break_ratio: float = 0.30) -> Tuple[Li
                     cp_trade["notional"] = notional + random.choice([500_000, 1_000_000, -250_000])
                 else:
                     if asset_class_choice == AssetClass.INTEREST_RATE_SWAP:
-                        cp_trade["fixed_rate"] = round(cp_trade["fixed_rate"] + 0.0015, 4)
+                        cp_trade["fixed_rate"] = round(cp_trade["fixed_rate"] + random.choice([0.0015, 0.0025]), 4)
                     elif asset_class_choice == AssetClass.EQUITY_OPTION:
-                        cp_trade["strike_price"] = cp_trade["strike_price"] + 10.0
+                        cp_trade["strike_price"] = cp_trade["strike_price"] + random.choice([10.0, 25.0])
                     elif asset_class_choice == AssetClass.FX_FORWARD:
-                        cp_trade["forward_rate"] = round(cp_trade["forward_rate"] + 0.0040, 4)
+                        cp_trade["forward_rate"] = round(cp_trade["forward_rate"] + random.choice([0.0040, 0.0060]), 4)
+
+            elif break_scenario == "MICRO_ROUNDING":
+                # Realistic small discrepancies (e.g. 0.5-3.0 bps, 2-5 pips, $15-$50 rounding)
+                if asset_class_choice == AssetClass.INTEREST_RATE_SWAP:
+                    if random.random() < 0.5:
+                        cp_trade["notional"] = notional + random.choice([15.0, 35.0, 75.0])
+                    else:
+                        cp_trade["fixed_rate"] = round(cp_trade["fixed_rate"] + random.choice([0.0001, 0.0002, 0.0003]), 4) # 1-3 bps
+                elif asset_class_choice == AssetClass.FX_FORWARD:
+                    cp_trade["forward_rate"] = round(cp_trade["forward_rate"] + random.choice([0.0002, 0.0004]), 4) # 2-4 pips
+                elif asset_class_choice == AssetClass.EQUITY_OPTION:
+                    cp_trade["notional"] = notional + random.choice([20.0, 50.0])
 
             elif break_scenario == "NON_ECONOMIC":
                 choice = random.choice(["trader_id", "book_id", "cp_name"])
