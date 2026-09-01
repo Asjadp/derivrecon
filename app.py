@@ -497,17 +497,17 @@ with tab2:
         else:
             st.success("✅ Clean Match: All economic and non-economic fields align within tolerance!")
 
-        # Raw Payload Comparison
-        st.markdown("#### 📋 Raw Trade Payloads")
-        c_raw1, c_raw2 = st.columns(2)
-        with c_raw1:
-            with st.container(border=True):
-                st.caption("Internal OMS Record")
-                st.json(selected_res.internal_trade or {"status": "ORPHAN: MISSING IN INTERNAL OMS"})
-        with c_raw2:
-            with st.container(border=True):
-                st.caption("Counterparty Confirmation Record")
-                st.json(selected_res.counterparty_trade or {"status": "ORPHAN: MISSING IN COUNTERPARTY FEED"})
+        # Raw Payload Comparison (Collapsed by default for clean UX)
+        with st.expander("📋 View Raw JSON Message Payloads (Advanced Technical Audit)", expanded=False):
+            c_raw1, c_raw2 = st.columns(2)
+            with c_raw1:
+                with st.container(border=True):
+                    st.caption("Internal OMS Record (Raw Payload)")
+                    st.json(selected_res.internal_trade or {"status": "ORPHAN: MISSING IN INTERNAL OMS"})
+            with c_raw2:
+                with st.container(border=True):
+                    st.caption("Counterparty Confirmation Record (Raw Payload)")
+                    st.json(selected_res.counterparty_trade or {"status": "ORPHAN: MISSING IN COUNTERPARTY FEED"})
     else:
         st.warning("No trades match current filters.")
 
