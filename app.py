@@ -152,51 +152,88 @@ elif data_source == "📤 Upload Custom Feeds":
                 st.sidebar.error(f"Upload parse error: {e}")
 
 # Matching Tolerances
-with st.sidebar.expander("🎯 Matching Tolerances", expanded=False):
-    st.caption("Define acceptable variance thresholds to absorb minor rounding differences:")
-    notional_tol = st.number_input("Notional Rounding ($)", min_value=0.0, value=float(st.session_state.tolerance_rules.get("notional", 5.0)), step=5.0)
-    rate_tol_bps = st.number_input("Fixed Rate Tol (bps)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("fixed_rate", 0.00005) * 10000, 3)), step=0.5)
-    fwd_tol_pips = st.number_input("Forward Rate Tol (pips)", min_value=0.0, value=float(round(st.session_state.tolerance_rules.get("forward_rate", 0.0001) * 10000, 1)), step=1.0)
-    strike_tol = st.number_input("Option Strike Tol ($)", min_value=0.0, value=float(st.session_state.tolerance_rules.get("strike_price", 0.01)), step=1.0)
-    
-    st.caption("💡 *Typical values: Micro variances are 1–3 bps or 2–5 pips. Macro breaks are 15+ bps or $250k+.*")
-    
-    if st.button("Apply Tolerances", key="apply_tol"):
-        prev_breaks = sum(1 for r in st.session_state.recon_results if r.break_type != BreakType.MATCHED)
+with st.sidebar.expander("🎯 Matching Tolerances", expanded=True):
+    st.markdown("**Quick Presets:**")
+    p_col1, p_col2, p_col3 = st.columns(3)
+    with p_col1:
+        if st.button("Strict", key="p_strict", help="Zero tolerance ($5, 0.05 bps, 1 pip)"):
+            st.session_state.tolerance_rules = {"notional": 5.0, "fixed_rate": 0.00005, "forward_rate": 0.0001, "strike_price": 0.01}
+            execute_reconciliation()
+            st.rerun()
+    with p_col2:
+        if st.button("Medium", key="p_med", help="Absorbs micro rounding ($50, 3.5 bps, 5 pips)"):
+            st.session_state.tolerance_rules = {"notional": 50.0, "fixed_rate": 0.00035, "forward_rate": 0.0005, "strike_price": 1.0}
+            execute_reconciliation()
+            st.rerun()
+    with p_col3:
+        if st.button("Lenient", key="p_len", help="Absorbs larger variances ($100, 20 bps, 45 pips, $30 strike)"):
+            st.session_state.tolerance_rules = {"notional": 100.0, "fixed_rate": 0.0020, "forward_rate": 0.0045, "strike_price": 30.0}
+            execute_reconciliation()
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Custom Thresholds:**")
+    curr_notional = float(st.session_state.tolerance_rules.get("notional", 5.0))
+    curr_rate_bps = float(round(st.session_state.tolerance_rules.get("fixed_rate", 0.00005) * 10000, 2))
+    curr_fwd_pips = float(round(st.session_state.tolerance_rules.get("forward_rate", 0.0001) * 10000, 1))
+    curr_strike = float(st.session_state.tolerance_rules.get("strike_price", 0.01))
+
+    notional_tol = st.number_input("Notional Rounding ($)", min_value=0.0, value=curr_notional, step=10.0)
+    rate_tol_bps = st.number_input("Fixed Rate Tol (bps)", min_value=0.0, value=curr_rate_bps, step=0.5)
+    fwd_tol_pips = st.number_input("Forward Rate Tol (pips)", min_value=0.0, value=curr_fwd_pips, step=1.0)
+    strike_tol = st.number_input("Option Strike Tol ($)", min_value=0.0, value=curr_strike, step=5.0)
+
+    if st.button("⚡ Apply Custom Tolerances", key="apply_tol"):
         st.session_state.tolerance_rules["notional"] = float(notional_tol)
         st.session_state.tolerance_rules["fixed_rate"] = float(rate_tol_bps / 10000)
         st.session_state.tolerance_rules["forward_rate"] = float(fwd_tol_pips / 10000)
         st.session_state.tolerance_rules["strike_price"] = float(strike_tol)
         execute_reconciliation()
-        new_breaks = sum(1 for r in st.session_state.recon_results if r.break_type != BreakType.MATCHED)
-        diff = prev_breaks - new_breaks
-        if diff > 0:
-            st.success(f"Absorbed {diff} micro-breaks! Total breaks reduced from {prev_breaks} to {new_breaks}.")
-        elif diff < 0:
-            st.warning(f"Tighter tolerances flagged {-diff} additional breaks (from {prev_breaks} to {new_breaks}).")
-        else:
-            st.info(f"Reconciliation re-run: Active breaks remain at {new_breaks}.")
         st.rerun()
+
+# Ensure latest reconciliation results are in scope
+results: List[ReconResult] = st.session_state.recon_results
+workflow: WorkflowManager = st.session_state.workflow
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("## 🔍 Filters")
 
+all_asset_classes = [a.value for a in AssetClass]
+all_severities = [s.value for s in BreakSeverity]
+all_break_types = [b.value for b in BreakType]
+
+if "filter_asset" not in st.session_state:
+    st.session_state.filter_asset = all_asset_classes
+if "filter_sev" not in st.session_state:
+    st.session_state.filter_sev = all_severities
+if "filter_type" not in st.session_state:
+    st.session_state.filter_type = all_break_types
+
+if st.sidebar.button("🔄 Reset All Filters", key="reset_filters_btn"):
+    st.session_state.filter_asset = all_asset_classes
+    st.session_state.filter_sev = all_severities
+    st.session_state.filter_type = all_break_types
+    st.rerun()
+
 asset_filter = st.sidebar.multiselect(
     "Asset Class",
-    options=[a.value for a in AssetClass],
-    default=[a.value for a in AssetClass]
+    options=all_asset_classes,
+    default=st.session_state.filter_asset,
+    key="ms_asset"
 )
 
 severity_filter = st.sidebar.multiselect(
     "Break Severity",
-    options=[s.value for s in BreakSeverity],
-    default=[s.value for s in BreakSeverity]
+    options=all_severities,
+    default=st.session_state.filter_sev,
+    key="ms_sev"
 )
 
 type_filter = st.sidebar.multiselect(
     "Break Type",
-    options=[b.value for b in BreakType],
-    default=[b.value for b in BreakType]
+    options=all_break_types,
+    default=st.session_state.filter_type,
+    key="ms_type"
 )
 
 search_query = st.sidebar.text_input("Search Trade UTI / Counterparty", "")
@@ -204,16 +241,18 @@ search_query = st.sidebar.text_input("Search Trade UTI / Counterparty", "")
 # Filter Results
 filtered_results: List[ReconResult] = []
 for r in results:
-    ac_match = r.asset_class in asset_filter
-    sev_str = r.severity.value if hasattr(r.severity, "value") else str(r.severity)
-    type_str = r.break_type.value if hasattr(r.break_type, "value") else str(r.break_type)
-    sev_match = sev_str in severity_filter
-    type_match = type_str in type_filter
+    ac_val = r.asset_class.value if hasattr(r.asset_class, "value") else str(r.asset_class)
+    sev_val = r.severity.value if hasattr(r.severity, "value") else str(r.severity)
+    type_val = r.break_type.value if hasattr(r.break_type, "value") else str(r.break_type)
+
+    ac_match = (ac_val in asset_filter) if asset_filter else True
+    sev_match = (sev_val in severity_filter) if severity_filter else True
+    type_match = (type_val in type_filter) if type_filter else True
     
     search_match = True
-    if search_query:
-        query_lower = search_query.strip().lower()
-        search_match = (query_lower in r.uti.lower()) or (query_lower in r.counterparty_name.lower())
+    if search_query and search_query.strip():
+        q_lower = search_query.strip().lower()
+        search_match = (q_lower in r.uti.lower()) or (q_lower in r.counterparty_name.lower())
     
     if ac_match and sev_match and type_match and search_match:
         filtered_results.append(r)
