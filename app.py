@@ -66,6 +66,49 @@ st.markdown("""
 # ---------------------------------------------------------
 # 2. DATA INGESTION & SESSION INITIALIZATION
 # ---------------------------------------------------------
+MAX_ROW_LIMIT = 200
+
+def parse_uploaded_trade_file(uploaded_file, max_rows: int = MAX_ROW_LIMIT) -> Tuple[List[Dict[str, Any]], bool, int]:
+    """
+    Parses an uploaded file (Excel, CSV, or JSON) into a list of trade dictionaries.
+    Returns (trades_list, was_capped, original_total_count).
+    """
+    fname = uploaded_file.name.lower()
+    trades = []
+    
+    if fname.endswith(".json"):
+        content = json.load(uploaded_file)
+        if isinstance(content, list):
+            trades = content
+        elif isinstance(content, dict) and "trades" in content:
+            trades = content["trades"]
+        else:
+            trades = [content]
+            
+    elif fname.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(uploaded_file)
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.strftime("%Y-%m-%d")
+        trades = df.where(pd.notnull(df), None).to_dict(orient="records")
+        
+    elif fname.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.strftime("%Y-%m-%d")
+        trades = df.where(pd.notnull(df), None).to_dict(orient="records")
+    else:
+        raise ValueError(f"Unsupported format: {fname}. Please upload Excel (.xlsx/.xls), CSV (.csv), or JSON (.json).")
+    
+    total_count = len(trades)
+    was_capped = False
+    if total_count > max_rows:
+        trades = trades[:max_rows]
+        was_capped = True
+        
+    return trades, was_capped, total_count
+
 def load_default_trades():
     int_path = os.path.join(ROOT_DIR, "data", "internal_trades.json")
     cp_path = os.path.join(ROOT_DIR, "data", "counterparty_trades.json")
@@ -76,10 +119,11 @@ def load_default_trades():
             with open(cp_path, "r", encoding="utf-8") as f:
                 cp_trades = json.load(f)
             if int_trades and cp_trades:
-                return int_trades, cp_trades
+                return int_trades[:MAX_ROW_LIMIT], cp_trades[:MAX_ROW_LIMIT]
         except Exception:
             pass
-    return generate_trade_batch(count=50, break_ratio=0.30)
+    i_t, c_t = generate_trade_batch(count=50, break_ratio=0.30)
+    return i_t[:MAX_ROW_LIMIT], c_t[:MAX_ROW_LIMIT]
 
 if "internal_trades" not in st.session_state or "cp_trades" not in st.session_state:
     int_trades, cp_trades = load_default_trades()
@@ -92,8 +136,8 @@ if "tolerance_rules" not in st.session_state:
 def execute_reconciliation():
     engine = ReconciliationEngine(tolerance_rules=st.session_state.tolerance_rules)
     st.session_state.recon_results = engine.reconcile_batches(
-        st.session_state.internal_trades,
-        st.session_state.cp_trades
+        st.session_state.internal_trades[:MAX_ROW_LIMIT],
+        st.session_state.cp_trades[:MAX_ROW_LIMIT]
     )
     st.session_state.workflow = WorkflowManager(st.session_state.recon_results)
 
@@ -111,7 +155,7 @@ st.sidebar.markdown("## ⚙️ Data & Controls")
 # Data Source Ingestion
 data_source = st.sidebar.selectbox(
     "Data Source Mode",
-    ["📁 Baseline Sample Feeds", "⚡ Synthetic Feed Generator", "📤 Upload Custom Feeds"]
+    ["📁 Baseline Sample Feeds", "⚡ Synthetic Feed Generator", "📤 Upload Custom Feeds (Excel/CSV/JSON)"]
 )
 
 if data_source == "📁 Baseline Sample Feeds":
@@ -124,32 +168,76 @@ if data_source == "📁 Baseline Sample Feeds":
         st.rerun()
 
 elif data_source == "⚡ Synthetic Feed Generator":
-    synth_count = st.sidebar.slider("Trade Count", 10, 200, 50, step=10)
+    synth_count = st.sidebar.slider("Trade Count (Max 200)", 10, MAX_ROW_LIMIT, 50, step=10)
     synth_break_ratio = st.sidebar.slider("Break Probability", 0.05, 0.60, 0.30, step=0.05)
     if st.sidebar.button("🚀 Generate New Feeds", key="gen_sidebar_feed"):
         int_t, cp_t = generate_trade_batch(count=synth_count, break_ratio=synth_break_ratio)
-        st.session_state.internal_trades = int_t
-        st.session_state.cp_trades = cp_t
+        st.session_state.internal_trades = int_t[:MAX_ROW_LIMIT]
+        st.session_state.cp_trades = cp_t[:MAX_ROW_LIMIT]
         execute_reconciliation()
-        st.sidebar.success(f"Generated {synth_count} synthetic trades!")
+        st.sidebar.success(f"Generated {len(st.session_state.internal_trades)} synthetic trades!")
         st.rerun()
 
-elif data_source == "📤 Upload Custom Feeds":
-    st.sidebar.caption("Upload JSON feeds matching TradeRecord schema:")
-    uploaded_int = st.sidebar.file_uploader("Internal OMS Trades (JSON)", type=["json"], key="up_int")
-    uploaded_cp = st.sidebar.file_uploader("Counterparty Feeds (JSON)", type=["json"], key="up_cp")
-    if uploaded_int and uploaded_cp:
-        if st.sidebar.button("📥 Ingest Uploaded Feeds", key="ingest_upload"):
-            try:
-                int_t = json.load(uploaded_int)
-                cp_t = json.load(uploaded_cp)
-                st.session_state.internal_trades = int_t
-                st.session_state.cp_trades = cp_t
-                execute_reconciliation()
-                st.sidebar.success(f"Ingested {len(int_t)} internal & {len(cp_t)} CP trades!")
-                st.rerun()
-            except Exception as e:
-                st.sidebar.error(f"Upload parse error: {e}")
+elif data_source == "📤 Upload Custom Feeds (Excel/CSV/JSON)":
+    st.sidebar.caption("🔒 *Performance limit: Max 200 trades processed per feed.*")
+    
+    upload_mode = st.sidebar.radio("Upload Format:", ["Two Separate Files", "Single 2-Sheet Excel Workbook"], horizontal=True)
+    
+    if upload_mode == "Two Separate Files":
+        uploaded_int = st.sidebar.file_uploader(
+            "1. Internal OMS File (.xlsx, .xls, .csv, .json)",
+            type=["xlsx", "xls", "csv", "json"],
+            key="up_int"
+        )
+        uploaded_cp = st.sidebar.file_uploader(
+            "2. Counterparty File (.xlsx, .xls, .csv, .json)",
+            type=["xlsx", "xls", "csv", "json"],
+            key="up_cp"
+        )
+        if uploaded_int and uploaded_cp:
+            if st.sidebar.button("📥 Ingest Uploaded Files", key="ingest_upload_2files"):
+                try:
+                    int_t, int_capped, int_tot = parse_uploaded_trade_file(uploaded_int, MAX_ROW_LIMIT)
+                    cp_t, cp_capped, cp_tot = parse_uploaded_trade_file(uploaded_cp, MAX_ROW_LIMIT)
+                    st.session_state.internal_trades = int_t
+                    st.session_state.cp_trades = cp_t
+                    execute_reconciliation()
+                    
+                    msg = f"Ingested {len(int_t)} internal & {len(cp_t)} CP trades!"
+                    if int_capped or cp_capped:
+                        msg += f" (Capped to top {MAX_ROW_LIMIT} rows from {max(int_tot, cp_tot)} total rows)."
+                    st.sidebar.success(msg)
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Upload parse error: {e}")
+
+    else:
+        uploaded_single = st.sidebar.file_uploader(
+            "Single Excel Workbook with 'Internal' & 'Counterparty' sheets",
+            type=["xlsx", "xls"],
+            key="up_single"
+        )
+        if uploaded_single:
+            if st.sidebar.button("📥 Ingest Workbook", key="ingest_upload_single"):
+                try:
+                    xls = pd.ExcelFile(uploaded_single)
+                    sheet_names_lower = {s.lower(): s for s in xls.sheet_names}
+                    int_sheet = sheet_names_lower.get("internal", xls.sheet_names[0])
+                    cp_sheet = sheet_names_lower.get("counterparty", xls.sheet_names[1] if len(xls.sheet_names) > 1 else xls.sheet_names[0])
+                    
+                    df_int = pd.read_excel(xls, sheet_name=int_sheet)
+                    df_cp = pd.read_excel(xls, sheet_name=cp_sheet)
+                    
+                    int_t = df_int.where(pd.notnull(df_int), None).to_dict(orient="records")[:MAX_ROW_LIMIT]
+                    cp_t = df_cp.where(pd.notnull(df_cp), None).to_dict(orient="records")[:MAX_ROW_LIMIT]
+                    
+                    st.session_state.internal_trades = int_t
+                    st.session_state.cp_trades = cp_t
+                    execute_reconciliation()
+                    st.sidebar.success(f"Ingested {len(int_t)} internal trades ({int_sheet}) and {len(cp_t)} CP trades ({cp_sheet})!")
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Workbook parse error: {e}")
 
 # Matching Tolerances
 with st.sidebar.expander("🎯 Matching Tolerances", expanded=True):
@@ -490,12 +578,12 @@ with tab3:
 # TAB 4: SYNTHETIC GENERATOR & DATA MANAGEMENT
 # =========================================================
 with tab4:
-    st.subheader("Synthetic Trade Feed Generator")
-    st.write("Generate high-fidelity multi-asset derivative trade batches simulating realistic Middle Office capture conditions.")
+    st.subheader("Synthetic Trade Feed Generator & Download Templates")
+    st.write("Generate high-fidelity multi-asset derivative trade batches simulating realistic Middle Office capture conditions (max 200 trades).")
     
     gen_c1, gen_c2, gen_c3 = st.columns(3)
     with gen_c1:
-        gen_batch_size = st.slider("Batch Size (Number of Trades)", 10, 500, 50, step=10, key="gen_tab_size")
+        gen_batch_size = st.slider("Batch Size (Max 200)", 10, MAX_ROW_LIMIT, 50, step=10, key="gen_tab_size")
     with gen_c2:
         gen_ratio = st.slider("Discrepancy Ratio", 0.05, 0.75, 0.30, step=0.05, key="gen_tab_ratio")
     with gen_c3:
@@ -507,14 +595,61 @@ with tab4:
         else:
             int_t, cp_t = generate_trade_batch(count=gen_batch_size, break_ratio=gen_ratio)
         
-        st.session_state.internal_trades = int_t
-        st.session_state.cp_trades = cp_t
+        st.session_state.internal_trades = int_t[:MAX_ROW_LIMIT]
+        st.session_state.cp_trades = cp_t[:MAX_ROW_LIMIT]
         execute_reconciliation()
-        st.success(f"Generated {gen_batch_size} trade pairs with {int(gen_ratio*100)}% break injection!")
+        st.success(f"Generated {len(st.session_state.internal_trades)} trade pairs with {int(gen_ratio*100)}% break injection!")
         st.rerun()
 
     st.markdown("---")
-    st.markdown("#### 📥 Download Raw Synthetic Trade Feeds (JSON)")
+    st.markdown("#### 📥 Download Sample Trade Templates (Excel & JSON)")
+    st.caption("Use these files as templates to populate and upload your own custom trade feeds:")
+    
+    # Generate Excel buffers for download
+    df_int = pd.DataFrame(st.session_state.internal_trades)
+    df_cp = pd.DataFrame(st.session_state.cp_trades)
+    
+    buf_int_xlsx = BytesIO()
+    with pd.ExcelWriter(buf_int_xlsx, engine="openpyxl") as writer:
+        df_int.to_excel(writer, index=False, sheet_name="InternalOMS")
+    buf_int_xlsx.seek(0)
+    
+    buf_cp_xlsx = BytesIO()
+    with pd.ExcelWriter(buf_cp_xlsx, engine="openpyxl") as writer:
+        df_cp.to_excel(writer, index=False, sheet_name="Counterparty")
+    buf_cp_xlsx.seek(0)
+
+    # Combined 2-sheet workbook
+    buf_combined = BytesIO()
+    with pd.ExcelWriter(buf_combined, engine="openpyxl") as writer:
+        df_int.to_excel(writer, index=False, sheet_name="Internal")
+        df_cp.to_excel(writer, index=False, sheet_name="Counterparty")
+    buf_combined.seek(0)
+
+    col_dl_a, col_dl_b, col_dl_c = st.columns(3)
+    with col_dl_a:
+        st.download_button(
+            "📊 Download Dual-Sheet Excel Workbook (.xlsx)",
+            data=buf_combined,
+            file_name="DerivRecon_Dual_Feed_Template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with col_dl_b:
+        st.download_button(
+            "📄 Download Internal OMS Excel (.xlsx)",
+            data=buf_int_xlsx,
+            file_name="internal_trades.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with col_dl_c:
+        st.download_button(
+            "📄 Download Counterparty Excel (.xlsx)",
+            data=buf_cp_xlsx,
+            file_name="counterparty_trades.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    st.markdown("###### JSON Feeds:")
     c_dl1, c_dl2 = st.columns(2)
     with c_dl1:
         st.download_button(
